@@ -6,10 +6,10 @@
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 'BOOLEANS--------------------------------------------------------------------------------
-Dim skipHeader: skipHeader = TRUE 'ARE WE GOIGN TO SKIP THE HEADER LINE? (LEAVE THIS A DIM AND NOT A CONST BECAUSE WE CHANGE THE VALUE TO FALSE AFTER SKIPPING)
-Const isAuto = TRUE 'IS THIS SCRIPT BEING RUN  BY A USER WHO NEEDS FEEDBACK? OR THROUGH AN AUTOMATED PROCESS? (FALSE = USER, TRUE = AUTOMATED)
+Const delHead = false 'SHOULD THE HEADER 'IF IT EXISTS' BE DELETED?
+Const isAuto = true 'IS THIS SCRIPT BEING RUN  BY A USER WHO NEEDS FEEDBACK? OR THROUGH AN AUTOMATED PROCESS? (FALSE = USER, TRUE = AUTOMATED)
 Const igSpecial = TRUE 'ENABLE THIS TO IGNORE SPECIAL CHARACTERS AND SPACES DURING COST CENTRE VERIFICATION
-Const cleanCC = FALSE 'ENABLE THIS TO REMOVE SPECIAL CHARACTERS AND SPACES WHEN RETURNING THE COST CENTRE
+Const cleanCC = FALSE 'ENABLE THIS TO REMOVE SPECIAL CHARACTERS AND SPACES WHEN RETURNING/WRITING THE COST CENTRE TO THE RESULT FILE
 
 'READ/WRITE LOCATIONS--------------------------------------------------------------------
 Const CCENTRE_FILE_LOCATION = "E:\PP_Processes\All\COST_CENTRE_MASTER\cc.csv" 'FULL PATH TO CSV FILE THAT HAS ALL OF THE COST CENTRES
@@ -26,9 +26,8 @@ Const rfDel = "," 'DELIMITER USED IN REVIEW FILE
 Const invalidStr = "NO" 'STRING VALUE TO USE WHEN INVALID
 Const validStr = "YES" 'STRING VALUE TO USE WHEN VALID
 
-Set re = New RegExp
-    re.Pattern = """[^""]*,[^""]*"""
-    re.Global = True
+'REGEX-----------------------------------------------------------------------------------
+Set re = New RegExp: re.Pattern = """[^""]*,[^""]*""": re.Global = True 'REGEX TO DETECT COMMAS BETWEEN DOUBLE QUOTES (USE THIS TO PREVENT SPLITTING ON VALUES WITHIN QUOTES)
 
 'INTEGERS--------------------------------------------------------------------------------
 'NOTE: COLUMNS IN THIS SCRIPT START AT '0', SAME CONCEPT AS ARRAYS
@@ -93,7 +92,6 @@ Sub Start_Check()
 'run main sub to create new fsu file
 		If isAuto = false then: ProgressMsg"VALIDATING COST CENTRES, PLEASE WAIT...", "CC VALIDATOR V4": end if 'show processing window
 		
-'CALL MAIN PROGRAM
 		Call Main()
 		
 		If isAuto = false then
@@ -112,123 +110,125 @@ end Sub 'end sub Start_check'
 Sub Main
 '================================================================================'
 	
-	Dim ss
+	Dim ss 'TEMP VAR TO HOLD CURRENT LINE STRING FOR POST PROCESSING
 	Dim sa 'TEMP VAR TO HOLD LINE ARR WHEN SPLIT
 	Dim cc 'TEMP VAR TO HOLD CONST CENTRE FOR PROCESSING
 	
-'DO A FIRST CHECK TO VERIFY THAT THE REVIEW FILE FOR READING EXISTS
-	If not(fso.FileExists(REVIEW_FILE_LOCATION)) Then
-		Call Err.Raise(vbObjectError + 10, "MAIN", "ERROR WITH REVIEW FILE PATH SUPPLIED")
-	else
-		
 'FILL VALID COST CENTRE ARRAY USING INIT_COSTARR FUNCTION WITH THE PROVIDED PARAMS
-		costArr = Init_CostArr( CCENTRE_FILE_LOCATION , ccColumn, ccDel, igSpecial)
-		
+	costArr = Init_CostArr( CCENTRE_FILE_LOCATION , ccColumn, ccDel, igSpecial)
+	
 'OPEN REVIEW FILE FOR 'READING ONLY'
-		Set sr = fso.OpenTextFile(REVIEW_FILE_LOCATION, FORREADING)
-		
+	Set sr = fso.OpenTextFile(REVIEW_FILE_LOCATION, FORREADING)
+	
 'LOOP THROUGH REVIEW FILE AND CHECK COST CENTRE. WRITE RESULTING LINE TO OUT ARRAY
 '___________________________________________________________________________________________'
-		Do Until sr.AtEndOfStream
-			
+	Do Until sr.AtEndOfStream
+		
 'SPLIT CURRENT LINE ON COMMA TO ARR (READ LINE FIRST BEFORE HEADER SKIP DETECTION)
-			ss = sr.ReadLine		
-			ss = re.Replace(ss, GetRef("ReplaceCallback")) 'replace done
-			sa = Split(ss, rfDel)
+		ss = sr.ReadLine		
+		ss = re.Replace(ss, GetRef("ReplaceCallback")) 'REMOVE ALL COMMAS BETWEEN DOUBLE QUOTES
+		sa = Split(ss, rfDel) 'SPLIT ON GIVEN REVIEW FILE DELIMITER		
+		
+'REDIM SPLIT INPUT LINE TO SIZE REQUIRED FOR OUTPUT (IF REQUIRED)
+		if  UBound(sa) < rrTotalColums then
 			
-'SKIP HEADER LINE IF APPLICABLE ON FIRST LOOP
-			if skipHeader = true then
-				skipheader = false
-				Call push(outArr,(join(sa, rfDel)))
+'DETETMINE THE REQUIRED REDIM SIZE TO ADD MISSING COLUMNS
+			Dim newSize: newSize = (rrTotalColums) - UBound(sa)
+			
+'REDIM LINE ARRAY TO REQUIRED SIZE TO PREVENT OUT OF BOUNDS EXCEPTION
+			ReDim Preserve sa(UBound(sa) + newSize)
+			
+'IF ARRAY HAS MORE VALUES THAN EXPECTED COLUMNS THROW EXCEPTION				
+			elseif UBound(sa) > rrTotalColums then
+			
+			Call Err.Raise(vbObjectError + 10, "ARRAY EXCEEDS EXPECTED COLUMN COUNT! SCRIPT HAS TERMINATED")
+			
+		end if
+		
+'CLEAN THE ARRAY OF POSSIBLY UNWANTED CHARACTERS (THIS IS TO AVOID ERRORS UPON RECONSTRUCTION/JOIN)				
+		sa = CleanArr(sa)
+		
+'DETECT IF HEADER LINE AND DELETE IF ENABLED, OTHERWISE CONTINUE
+		if sa(rRColumn) <> invalidStr and sa(rRColumn) <> validStr and sa(rRColumn) <> "" then
+			
+			if delHead = False then : Call push(outArr,(join(sa, rfDel))) : end if
+			
+		else
+			
+			cc = sa(rcColumn) 'EXTRACT VALUE
+			
+'CHECK IF COST CENTRE IS VALID USING THE COST_LOOKUP FUNCTION (MAKE SURE COST CENTRE ARRAY HAS ALREADY BEEN INITIATED USING THE INIT FUNCTION)
+			If CostArr_Lookup(costArr,  cc, igSpecial) = true then
+				
+'POPULATE THE RESULT COLUMN WITH  SPECIFIED VALID STRING
+				sa(rrColumn) = validStr
+				tValidcc = tValidcc + 1
 			else
 				
-'REDIM SPLIT INPUT LINE TO SIZE REQUIRED FOR OUTPUT (IF REQUIRED)
-				if  UBound(sa) < rrTotalColums then
-					
-'DETETMINE THE REQUIRED REDIM SIZE TO ADD MISSING COLUMNS
-					Dim newSize: newSize = (rrTotalColums) - UBound(sa)
-					
-'REDIM LINE ARRAY TO REQUIRED SIZE TO PREVENT OUT OF BOUNDS EXCEPTION
-					ReDim Preserve sa(UBound(sa) + newSize)
-					
-				end if
-				
-'MsgBox("UBOUND SA = " &UBound(sa))
-				
-'CLEAN UP  EXTRACTED COST CENTRE STRING (IF THE COST CENTRE IS THE LAST COLUMN WE WILL NEED TO REMOVE AN ERRONOUS DOUBLE QUOTE CHARACTER)
-				sa = CleanArr(sa)
-				cc = sa(rcColumn) 'EXTRACT VALUE
-				
-'CHECK IF COST CENTRE IS VALID USING THE COST_LOOKUP FUNCTION (MAKE SURE COST CENTRE ARRAY HAS ALREADY BEEN INITIATED USING THE INIT FUNCTION)
-				If CostArr_Lookup(costArr,  cc, igSpecial) = true then
-					
-'POPULATE THE RESULT COLUMN WITH  SPECIFIED VALID STRING
-					sa(rrColumn) = validStr
-					tValidcc = tValidcc + 1
-				else
-					
 'POPULATE THE RESULT COLUMN WITH  SPECIFIED INVALID STRING
-					sa(rrColumn) = invalidStr
-					tInvalidcc = tInvalidcc + 1
-				end if
-				
+				sa(rrColumn) = invalidStr
+				tInvalidcc = tInvalidcc + 1
+			end if
+			
 'CLEAN COST CENTRE STRING IF OPTION IS ENABLED					
-				If cleanCC = TRUE then
-					
-					sa(rcColumn) = RemoveAlphaNumeric(cc) 'REMOVE ALL SPECIAL CHARACTERS (INCLUDING SPACES)
-					
-				end if
+			If cleanCC = TRUE then
 				
-				
-				Dim outStr: outStr = join(sa, rfDel) 'JOIN ENTIRE LINE USING THE DELIMITER SPECIFIED
-				
-'REMOVE ALL TRAILING DELIMITERS (EXCEL ABSOLUTLY HATES THESE)
-				Do While Right(outStr, 3) = """,""" 
-					
-					outStr = Left(outStr, Len(outStr) - 3) 
-					
-				Loop   
-				
-				if rfDel = """,""" then
-					outStr = """" & outStr & """" ' ADD DOUBLE QUOTE TO BEGINNING AND END if using quoted delimiter
-				end if
-				
-				
-'PUSH MODIFIED LINE TO OUTPUT ARRAY
-				Call push(outArr,outStr)
+				sa(rcColumn) = RemoveAlphaNumeric(cc) 'REMOVE ALL SPECIAL CHARACTERS (INCLUDING SPACES)
 				
 			end if
-		Loop
+			
+			
+			Dim outStr: outStr = join(sa, rfDel) 'JOIN ENTIRE LINE USING THE DELIMITER SPECIFIED
+			
+'REMOVE ALL TRAILING DELIMITERS (EXCEL ABSOLUTLY HATES THESE)
+			Do While Right(outStr, 3) = """,""" 
+				
+				outStr = Left(outStr, Len(outStr) - 3) 
+				
+			Loop   
+			
+			if rfDel = """,""" then
+				outStr = """" & outStr & """" ' ADD DOUBLE QUOTE TO BEGINNING AND END if using quoted delimiter
+			end if
+			
+			
+'PUSH MODIFIED LINE TO OUTPUT ARRAY
+			Call push(outArr,outStr)
+			
+		end if
+		
+		
+	Loop
 '___________________________________________________________________________________________'
-		
-		sr.close 'CLOSE READER
-		
+	
+	sr.close 'CLOSE READER
+	
 'CREATE RESULT FILE IF IT DOES NOT ALREADY EXIST
-		If not(fso.FileExists(RESULT_FILE_LOCATION)) Then
-			fso.CreateTextFile(RESULT_FILE_LOCATION)
-		end if
-		
+	If not(fso.FileExists(RESULT_FILE_LOCATION)) Then
+		fso.CreateTextFile(RESULT_FILE_LOCATION)
+	end if
+	
 'OPEN STREAM WRITER
+	
+	
+	If IsArray(outArr) then
 		
+		Set sw = fso.OpenTextFile(RESULT_FILE_LOCATION, FORWRITING)
 		
-		If IsArray(outArr) then
-			
-			Set sw = fso.OpenTextFile(RESULT_FILE_LOCATION, FORWRITING)
-			
 'OUTPUT ALL LINES FROM OUTPUT ARRAY TO RESULT FILE
-			for i = 0 to ubound(outArr)
-				
-				sw.WriteLine(outArr(i))
-				
-			next
+		for i = 0 to ubound(outArr)
 			
-			sw.close 'CLOSE WRITER
+			sw.WriteLine(outArr(i))
 			
-		end if
+		next
 		
-		
+		sw.close 'CLOSE WRITER
 		
 	end if
+	
+	
+	
+	
 	
 '================================================================================'
 End Sub
@@ -247,6 +247,7 @@ Function Init_CostArr(ccFile, column, delmiter, igSpecial)
 'CCFILE - (REQUIRED) FILE TO BE USED AS REFERANCE (THAT STORES MASTER LIST OF COST CENTRES)
 'COLUMN - (REQUIRED) PROVIDE THE COLUMN IN THE CSV TO PARSE INTO ARRAY
 'DELIMITER - (REQUIRED) PROVIDE THE DELIMITER USED IN THE CSV
+'IGSPECIAL - (REQUIRED) BOOLEAN VALUE ON WHETHER TO REMOVE SPECIAL CHARACTERS OR NOT (INCLUDING SPACES)
 'NOTE THAT THE CONST CENTRES NEED TO BE IN THE SECOND COLUMN
 'RESULT:
 'ARRAY OF COST CENTRES
@@ -330,6 +331,7 @@ Function CostArr_Lookup(costArr, costCentre, igSpecial )
 'PARAMS:
 'COSTARR - (REQUIRED) 1 DIMENTIONAL ARRAY OF COST CENTRES
 'COSTCENTRE - (REQUIRED) STRING VALUE TO LOOK FOR IN ARRAY
+'IGSPECIAL - (REQUIRED) BOOLEAN VALUE ON WHETHER TO IGNORE SPECIAL CHARACTERS OR NOT (INCLUDING SPACES)
 	
 'RESULT:
 'BOOLEAN RESULT IS RETURNED IF THE COST CENTRE IS VALID OR NOT
@@ -516,7 +518,8 @@ End Function
 '================================================================================'
 Function ReplaceCallback(match, position, all)
 '================================================================================'
-    ReplaceCallback = Replace(match, ",", " ")
+	ReplaceCallback = Replace(match, ",", " ")
 '================================================================================'
 End Function
 '================================================================================'
+
